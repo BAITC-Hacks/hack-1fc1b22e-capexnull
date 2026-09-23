@@ -1,5 +1,11 @@
-import { createServer } from 'node:http';
+﻿import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
+import { explain, AgenticAIError } from './src/ai/backend.js';
+import { validate } from './src/validator/index.js';
+import { calculate, calculateBaseline } from './src/engine/index.js';
+import { previewBudget } from './src/engine/preview.js';
+import { MEASURES, DISTRICTS, RULES } from './src/engine/data.js';
 
 const assets = new Map([
   ['/', ['index.html', 'text/html']],
@@ -14,19 +20,82 @@ const assets = new Map([
 ]);
 
 const port = Number(process.env.PORT || 3000);
-createServer(async (request, response) => {
-  const asset = assets.get(new URL(request.url, 'http://localhost').pathname);
-  if (!asset || !['GET', 'HEAD'].includes(request.method)) {
-    response.writeHead(404).end('Not found');
-    return;
-  }
-  try {
-    const content = await readFile(new URL(asset[0], import.meta.url));
-    response.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8` });
-    response.end(request.method === 'HEAD' ? undefined : content);
-  } catch {
-    response.writeHead(500).end('Unable to load application');
-  }
-}).listen(port, '127.0.0.1', () => {
-  console.log(`Аким на 5 часов: http://127.0.0.1:${port}`);
-});
+const json = (response, status, data) => {
+  response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  response.end(JSON.stringify(data));
+};
+
+/** One integration endpoint. Overrides are for local tests, never request parameters. */
+export function createApplication({ validateInput = validate, calculateInput = calculate, explainResult = explain } = {}) {
+  return createServer(async (request, response) => {
+    const url = new URL(request.url, 'http://localhost');
+    if (url.pathname === '/api/scenario') {
+      try {
+        if (request.method === 'GET') {
+          const ids = url.searchParams.getAll('measure');
+          json(response, 200, {
+            baseline: calculateBaseline(), measures: MEASURES, districts: Object.keys(DISTRICTS),
+            budget: RULES.budget, ...previewBudget(ids)
+          });
+          return;
+        }
+        if (request.method !== 'POST') {
+          json(response, 405, { error: { message: 'Используйте GET или POST.' } });
+          return;
+        }
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of request) {
+          size += chunk.length;
+          if (size > 16384) {
+            json(response, 413, { error: { message: 'Слишком большой сценарий.' } });
+            return;
+          }
+          chunks.push(chunk);
+        }
+        const scenario = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        const validation = validateInput(scenario);
+        if (!validation.valid) {
+          json(response, 422, { error: { code: validation.code, message: validation.errors[0] } });
+          return;
+        }
+        const calculation = calculateInput(validation.input);
+        let aiAnalysis = null;
+        let aiError = null;
+        try {
+          aiAnalysis = await explainResult(validation.input, calculation);
+        } catch (error) {
+          aiError = error instanceof AgenticAIError
+            ? 'AI-анализ временно недоступен. Математический результат сохранён.'
+            : 'Не удалось получить AI-анализ. Математический результат сохранён.';
+        }
+        json(response, 200, { calculation, aiAnalysis, aiError });
+      } catch (error) {
+        const badInput = error instanceof SyntaxError || error instanceof TypeError;
+        json(response, badInput ? 400 : 500, { error: {
+          message: badInput ? 'Не удалось прочитать сценарий. Проверьте выбранные мероприятия.' : 'Не удалось выполнить расчёт. Попробуйте ещё раз.'
+        } });
+      }
+      return;
+    }
+    const asset = assets.get(url.pathname);
+    if (!asset || !['GET', 'HEAD'].includes(request.method)) {
+      response.writeHead(404).end('Not found');
+      return;
+    }
+    try {
+      const content = await readFile(new URL(asset[0], import.meta.url));
+      response.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8` });
+      response.end(request.method === 'HEAD' ? undefined : content);
+    } catch {
+      response.writeHead(500).end('Unable to load application');
+    }
+  });
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  createApplication().listen(port, '127.0.0.1', () => {
+    console.log(`Аким на 5 часов: http://127.0.0.1:${port}`);
+  });
+}
+
