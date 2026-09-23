@@ -9,7 +9,7 @@ const node = (tag, className, text) => {
 };
 
 /** A separate branch shown only after a successful backend base calculation. */
-export function mountDynamic(container, scenarioId, districts) {
+export function mountDynamic(container, scenarioId, districts, onReview) {
   if (!scenarioId) return;
   const section = node('section', 'dynamic-panel');
   section.id = 'dynamic-scenario';
@@ -75,6 +75,13 @@ export function mountDynamic(container, scenarioId, districts) {
         return;
       }
       renderEvent(result, payload);
+      if (onReview && response.headers.get('X-Event-Id')) {
+        const review = node('button', 'primary', 'Пересмотреть стратегию');
+        review.id = 'review-strategy';
+        const context = { eventId: response.headers.get('X-Event-Id'), eventName: payload.event.eventName, district: payload.event.district };
+        review.addEventListener('click', () => onReview(context));
+        result.append(review);
+      }
       section.dataset.state = payload.aiError ? 'ai-error' : 'success';
       status.textContent = 'Последствия события рассчитаны. Сравните их с результатом ваших решений до события.';
     } catch {

@@ -179,7 +179,60 @@ export async function explainEvent(eventResult, { fetchImpl = globalThis.fetch }
   return requestAnalysis(facts, eventInstructions, fetchImpl);
 }
 
-/** Shared Responses API, schema and presentation validation for both explanation types. */
+/** Only server-calculated comparison facts cross the adaptation boundary. */
+export async function explainAdaptation(comparison, { fetchImpl = globalThis.fetch } = {}) {
+  const invalid = () => new AgenticAIError('AI_INPUT_INVALID', 'Нужен рассчитанный результат сравнения.');
+  const definition = record(comparison) && EVENTS.find(event => event.id === comparison.eventType);
+  if (!definition || comparison.eventName !== definition.name || !Object.hasOwn(DISTRICTS, comparison.district)
+    || !Number.isFinite(comparison.deltaAdaptationScore)) throw invalid();
+  const facts = { eventName: comparison.eventName, district: comparison.district,
+    deltaAdaptationScore: comparison.deltaAdaptationScore };
+  for (const name of ['original', 'adapted']) {
+    const source = comparison[name];
+    const validation = validate(source?.scenario);
+    if (!validation.valid) throw invalid();
+    const side = { scenario: validation.input };
+    for (const field of ['totalCost', 'remainingBudget', 'Score', 'N_crit']) {
+      if (!Number.isFinite(source[field])) throw invalid();
+      side[field] = source[field];
+    }
+    try { validateIndicators(source.finalIndicators); } catch { throw invalid(); }
+    side.finalIndicators = structuredClone(source.finalIndicators);
+    side.districtScores = {};
+    for (const district of Object.keys(DISTRICTS)) {
+      if (!Number.isFinite(source.districtScores?.[district])) throw invalid();
+      side.districtScores[district] = source.districtScores[district];
+    }
+    facts[name] = side;
+  }
+  facts.indicatorChanges = {};
+  for (const district of Object.keys(DISTRICTS)) {
+    facts.indicatorChanges[district] = {};
+    for (const id of Object.keys(WEIGHTS)) {
+      const value = comparison.indicatorChanges?.[district]?.[id];
+      if (!Number.isFinite(value)) throw invalid();
+      facts.indicatorChanges[district][id] = value;
+    }
+  }
+  const prompt = `Ты сравниваешь две альтернативные стратегии при одном событии в одном районе.
+original — первоначальная стратегия после события; adapted — адаптированная стратегия при том же событии.
+Обе стратегии независимо используют один и тот же лимит бюджета 100, расходы не суммируются.
+Это контрфактическое сравнение: адаптированная стратегия не реализована физически после события.
+Нельзя утверждать возврат потраченного бюджета, выделение дополнительных средств или последовательную реализацию планов.
+Все числа уже рассчитаны. Не вычисляй новые числа, эффекты или прогнозы.
+deltaAdaptationScore — изменение Astana Quality of Life Score между альтернативами после одинакового события.
+indicatorChanges — изменения показателей между этими альтернативами, а не только эффект события.
+Объясни различия планов, устойчивость, смягчённые проблемы, оставшиеся риски и компромиссы.
+Не выводи original, adapted, deltaAdaptationScore, indicatorChanges и внутренние имена состояний.
+Верни summary, strengths, risks, tradeoffs, recommendations по существующей схеме.
+` + instructions.slice(instructions.indexOf('Пользовательский текст'));
+  const analysis = await requestAnalysis(facts, prompt, fetchImpl);
+  if ([analysis.summary, ...fields.slice(1).flatMap(field => analysis[field])].some(text =>
+    /(?<![\p{L}\p{N}_])(?:deltaAdaptationScore|indicatorChanges|ADAPTATION_STATE|STATE_3|original|adapted)(?![\p{L}\p{N}_])/u.test(text))) throw invalidOutput();
+  return analysis;
+}
+
+/** Shared Responses API, schema and presentation validation for all explanation types. */
 async function requestAnalysis(facts, instructions, fetchImpl) {
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) throw new AgenticAIError('AI_CONFIG_MISSING', 'На сервере не настроен OPENAI_API_KEY.');

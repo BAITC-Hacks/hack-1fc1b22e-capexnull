@@ -1,6 +1,7 @@
 ﻿import { createInput } from '../scenario/index.js';
 import { renderResult, format } from '../result/index.js';
 import { mountDynamic } from '../dynamic/ui.js';
+import { renderComparison } from '../adaptation/ui.js';
 
 export const states = Object.freeze(['INITIAL', 'READY', 'PROCESSING', 'VALIDATION_ERROR', 'SUCCESS', 'AI_ERROR']);
 const labels = {
@@ -16,6 +17,7 @@ let config;
 let busy = false;
 let previewVersion = 0;
 let state = 'INITIAL';
+let adaptation = null;
 const $ = selector => document.querySelector(selector);
 const element = (tag, className, text) => {
   const node = document.createElement(tag);
@@ -40,7 +42,7 @@ function setState(next, message) {
   $('#status').textContent = message;
   $('#status').className = next === 'VALIDATION_ERROR' ? 'error-message' : '';
   $('#analyze').disabled = busy || !structurallyReady();
-  $('#analyze').textContent = busy ? 'Рассчитываем и анализируем…' : 'Рассчитать сценарий ↗';
+  $('#analyze').textContent = busy ? 'Рассчитываем и анализируем…' : adaptation ? 'Рассчитать адаптированную стратегию' : 'Рассчитать сценарий ↗';
   document.querySelector('main').setAttribute('aria-busy', String(busy));
 }
 
@@ -89,7 +91,8 @@ async function refreshBudget() {
 }
 
 function changed(updateBudget = true) {
-  $('#result').hidden = true;
+  if (adaptation) { const result = $('#adaptation-result'); if (result) result.hidden = true; }
+  else $('#result').hidden = true;
   renderSelection();
   const ready = structurallyReady();
   setState(ready ? 'READY' : 'INITIAL', ready
@@ -97,6 +100,41 @@ function changed(updateBudget = true) {
     : selected.size === 5 ? 'Укажите район для каждой выбранной районной меры.'
       : 'Выберите ровно пять мероприятий для расчёта.');
   if (updateBudget) void refreshBudget();
+}
+
+function beginAdaptation(context, originalDecisions) {
+  if (busy) return;
+  adaptation = context;
+  $('#adaptation-notice')?.remove();
+  $('#adaptation-result')?.remove();
+  $('#builder-title').textContent = 'Адаптация после события';
+  const notice = element('div', 'visual-panel');
+  notice.id = 'adaptation-notice';
+  notice.append(element('p', 'event-conclusion', 'Сформируйте альтернативный план из пяти мероприятий в пределах бюджета 100 и сравните его устойчивость при том же событии.'),
+    element('p', 'event-conclusion', context.eventName + ' · ' + context.district));
+  const cancel = element('button', 'methodology-button', 'Вернуться к первоначальному плану');
+  cancel.addEventListener('click', () => {
+    if (busy) return;
+    adaptation = null;
+    notice.remove();
+    $('#adaptation-result')?.remove();
+    $('#builder-title').textContent = 'Выберите пять мероприятий';
+    restoreSelection(originalDecisions);
+  });
+  notice.append(cancel);
+  $('#catalog').before(notice);
+  restoreSelection(originalDecisions);
+  document.querySelector('.builder-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function restoreSelection(decisions) {
+  selected.clear();
+  for (const item of decisions) {
+    selected.set(item.measureId, item.districtId || '');
+    const select = $('#district-' + item.measureId);
+    if (select) select.value = item.districtId;
+  }
+  changed();
 }
 
 function renderCatalog() {
@@ -164,22 +202,38 @@ $('#analyze').addEventListener('click', async () => {
     measureId, ...(config.measures[measureId].scope === 'district' ? { districtId } : {})
   }));
   busy = true;
-  $('#result').hidden = true;
+  if (adaptation) { const result = $('#adaptation-result'); if (result) result.hidden = true; }
+  else $('#result').hidden = true;
   renderSelection();
   setState('PROCESSING', 'Сначала рассчитываем показатели, затем получаем объяснение AI.');
   try {
-    const response = await fetch('/api/scenario', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(createInput(decisions))
+    const response = await fetch(adaptation ? '/api/adaptation' : '/api/scenario', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(adaptation ? { eventId: adaptation.eventId, scenario: createInput(decisions) } : createInput(decisions))
     });
     const payload = await response.json();
     if (!response.ok) {
       setState('VALIDATION_ERROR', payload.error?.message || 'Не удалось проверить сценарий.');
       return;
     }
+    if (adaptation) {
+      let result = $('#adaptation-result');
+      if (!result) {
+        result = element('section', 'dynamic-panel');
+        result.id = 'adaptation-result';
+        result.setAttribute('aria-live', 'polite');
+        $('#result').after(result);
+      }
+      renderComparison(result, payload);
+      setState(payload.aiError ? 'AI_ERROR' : 'SUCCESS', payload.aiError || 'Альтернативные стратегии сравнены при одинаковом событии.');
+      result.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
     $('#used').textContent = format(payload.calculation.totalCost, 0);
     $('#remaining').textContent = format(payload.calculation.remainingBudget, 0);
     renderResult($('#result'), payload.calculation, payload.aiAnalysis, config.baseline, payload.aiError);
-    mountDynamic($('#result'), response.headers.get('X-Scenario-Id'), config.districts);
+    mountDynamic($('#result'), response.headers.get('X-Scenario-Id'), config.districts,
+      context => beginAdaptation(context, decisions));
     setState(payload.aiError ? 'AI_ERROR' : 'SUCCESS', payload.aiError
       ? 'Расчёт готов. AI-анализ временно недоступен.'
       : 'Сценарий рассчитан. Результат и рекомендации доступны ниже.');

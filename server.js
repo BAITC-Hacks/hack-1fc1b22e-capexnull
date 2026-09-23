@@ -1,9 +1,10 @@
 ﻿import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
-import { explain, explainEvent, AgenticAIError } from './src/ai/backend.js';
+import { explain, explainEvent, explainAdaptation, AgenticAIError } from './src/ai/backend.js';
+import { captureStrategy, compareStrategy } from './src/adaptation/index.js';
 import { createDynamicBranch, EventValidationError } from './src/dynamic/engine.js';
-import { validate } from './src/validator/index.js';
+import { validate, ValidationError } from './src/validator/index.js';
 import { calculate, calculateBaseline } from './src/engine/index.js';
 import { previewBudget } from './src/engine/preview.js';
 import { MEASURES, DISTRICTS, RULES } from './src/engine/data.js';
@@ -19,6 +20,7 @@ const assets = new Map([
   ['/src/ai/index.js', ['src/ai/index.js', 'text/javascript']],
   ['/src/result/index.js', ['src/result/index.js', 'text/javascript']],
   ['/src/dynamic/ui.js', ['src/dynamic/ui.js', 'text/javascript']],
+  ['/src/adaptation/ui.js', ['src/adaptation/ui.js', 'text/javascript']],
   ['/src/dynamic/catalog.js', ['src/dynamic/catalog.js', 'text/javascript']]
 ]);
 
@@ -29,11 +31,41 @@ const json = (response, status, data) => {
 };
 
 /** One integration endpoint. Overrides are for local tests, never request parameters. */
-export function createApplication({ validateInput = validate, calculateInput = calculate, explainResult = explain, explainEventResult = explainEvent } = {}) {
+export function createApplication({ validateInput = validate, calculateInput = calculate, explainResult = explain, explainEventResult = explainEvent, explainAdaptationResult = explainAdaptation } = {}) {
   const branches = new Map();
+  const plans = new Map();
+  const observedEvents = new Map();
+  let eventNumber = 0;
   let scenarioNumber = 0;
   return createServer(async (request, response) => {
     const url = new URL(request.url, 'http://localhost');
+    if (url.pathname === '/api/adaptation' && request.method === 'POST') {
+      try {
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of request) {
+          size += chunk.length;
+          if (size > 16384) { json(response, 413, { error: { message: 'Слишком большой сценарий.' } }); return; }
+          chunks.push(chunk);
+        }
+        const input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        const original = observedEvents.get(input?.eventId);
+        if (!original) { json(response, 409, { error: { message: 'Сначала рассчитайте первоначальную стратегию и событие.' } }); return; }
+        const { comparison } = compareStrategy(original, input.scenario, { calculateInput });
+        let aiAnalysis = null;
+        let aiError = null;
+        try { aiAnalysis = await explainAdaptationResult(comparison); }
+        catch { aiError = 'AI-анализ сравнения временно недоступен. Результат сравнения сохранён.'; }
+        json(response, 200, { comparison, aiAnalysis, aiError });
+      } catch (error) {
+        const invalid = error instanceof ValidationError || error instanceof SyntaxError;
+        json(response, invalid ? 422 : 500, { error: {
+          ...(error instanceof ValidationError ? { code: error.code } : {}),
+          message: error instanceof ValidationError ? error.message : invalid ? 'Некорректный запрос сравнения.' : 'Не удалось сравнить стратегии.'
+        } });
+      }
+      return;
+    }
     if (url.pathname === '/api/event' && request.method === 'POST') {
       try {
         const chunks = [];
@@ -48,6 +80,9 @@ export function createApplication({ validateInput = validate, calculateInput = c
         if (!branch) { json(response, 409, { error: { message: 'Сначала выполните успешный базовый расчёт.' } }); return; }
         // Explicit request is the only trigger; branch applies only a validated candidate.
         const event = branch.apply(input.eventType, input.district);
+        const eventId = String(++eventNumber);
+        observedEvents.set(eventId, captureStrategy(plans.get(input.scenarioId), branch.state1, event));
+        response.setHeader('X-Event-Id', eventId);
         let aiAnalysis = null;
         let aiError = null;
         try { aiAnalysis = await explainEventResult(event); }
@@ -92,6 +127,7 @@ export function createApplication({ validateInput = validate, calculateInput = c
         const calculation = calculateInput(validation.input);
         const scenarioId = String(++scenarioNumber);
         branches.set(scenarioId, createDynamicBranch(calculation));
+        plans.set(scenarioId, structuredClone(validation.input));
         response.setHeader('X-Scenario-Id', scenarioId);
         let aiAnalysis = null;
         let aiError = null;
