@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Аким на 5 часов</title>
+    <link rel="stylesheet" href="/src/ui/styles.css">
+    <script type="module" src="/src/ui/app.js"></script>
+  </head>
+  <body>
+    <main>
+      <header><span class="brand">HackAlem · Астана</span><span class="badge">MATAN-only</span></header>
+      <section class="intro"><p class="eyebrow">Город. Решения. Последствия.</p><h1>Аким на 5 часов</h1><p>Один город — пять управленческих решений.<br>Сформируйте набор мер для улучшения качества жизни.</p></section>
+      <section class="metrics" aria-label="Исходные условия">
+        <article><span>Бюджет</span><strong id="budget"></strong><small>условных единиц</small></article>
+        <article><span>Остаток бюджета</span><strong id="remaining"></strong><small>до выбора мероприятий</small></article>
+        <article><span>Базовый Quality of Life Score</span><strong id="baseline"></strong><small>исходный показатель Астаны</small></article>
+      </section>
+      <div class="workspace">
+        <section class="panel"><div class="section-title"><h2>Ваши решения</h2><span>0 / 5</span></div><p>Порядок решений не влияет на результат.</p><div class="placeholder"><h3>Мероприятия появятся здесь</h3><p>Для районных мер будет доступен выбор района.</p></div><button id="analyze" disabled>Запустить анализ</button><p id="status" role="status" aria-live="polite"></p></section>
+        <section class="panel"><h2>Районы Астаны</h2><p>Основные показатели и изменения по районам.</p><div class="placeholder"><h3>Данные готовятся</h3><p>Показатели появятся после подключения математической модели.</p></div></section>
+      </div>
+      <section class="panel results" id="result" aria-live="polite"></section>
+      <footer>Архитектурный прототип · Расчёт и AI-анализ ещё не подключены</footer>
+    </main>
+  </body>
+</html>
