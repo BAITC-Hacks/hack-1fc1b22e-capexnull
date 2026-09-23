@@ -1,5 +1,6 @@
 ﻿import { createInput } from '../scenario/index.js';
 import { renderResult, format } from '../result/index.js';
+import { mountDynamic } from '../dynamic/ui.js';
 
 export const states = Object.freeze(['INITIAL', 'READY', 'PROCESSING', 'VALIDATION_ERROR', 'SUCCESS', 'AI_ERROR']);
 const labels = {
@@ -163,6 +164,7 @@ $('#analyze').addEventListener('click', async () => {
     measureId, ...(config.measures[measureId].scope === 'district' ? { districtId } : {})
   }));
   busy = true;
+  $('#result').hidden = true;
   renderSelection();
   setState('PROCESSING', 'Сначала рассчитываем показатели, затем получаем объяснение AI.');
   try {
@@ -177,6 +179,7 @@ $('#analyze').addEventListener('click', async () => {
     $('#used').textContent = format(payload.calculation.totalCost, 0);
     $('#remaining').textContent = format(payload.calculation.remainingBudget, 0);
     renderResult($('#result'), payload.calculation, payload.aiAnalysis, config.baseline, payload.aiError);
+    mountDynamic($('#result'), response.headers.get('X-Scenario-Id'), config.districts);
     setState(payload.aiError ? 'AI_ERROR' : 'SUCCESS', payload.aiError
       ? 'Расчёт готов. AI-анализ временно недоступен.'
       : 'Сценарий рассчитан. Результат и рекомендации доступны ниже.');

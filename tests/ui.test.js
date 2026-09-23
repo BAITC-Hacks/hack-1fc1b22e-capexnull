@@ -7,8 +7,10 @@ import { join } from 'node:path';
 import { createApplication } from '../server.js';
 import { calculate } from '../src/engine/index.js';
 import { previewBudget } from '../src/engine/preview.js';
-import { explain, validatePresentation } from '../src/ai/backend.js';
+import { explain, explainEvent, validatePresentation } from '../src/ai/backend.js';
 import { validate } from '../src/validator/index.js';
+import { EVENTS, INDICATOR_NAMES } from '../src/dynamic/catalog.js';
+import { computeEvent } from '../src/dynamic/engine.js';
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const decisions = [
@@ -25,6 +27,15 @@ let apiMode = 'success';
 let engineCalls = 0;
 let aiCalls = 0;
 let validatorCalls = 0;
+let eventCalls = 0;
+let eventMode = 'success';
+const eventAI = {
+  summary: 'Демонстрационная авария теплосети в Нуре снизила надёжность ЖКХ с 60 до 40.',
+  strengths: ['Критических показателей не появилось.'],
+  risks: ['Astana Quality of Life Score снизился с 56.54 до 55.72.'],
+  tradeoffs: ['Выбранная стратегия сохраняет уязвимость коммунальной инфраструктуры.'],
+  recommendations: ['Пересмотреть приоритеты распределения бюджета.']
+};
 let origin;
 let server;
 const originalKey = process.env.OPENAI_API_KEY;
@@ -32,6 +43,16 @@ const originalKey = process.env.OPENAI_API_KEY;
 before(async () => {
   process.env.OPENAI_API_KEY = 'stage4-mock-only';
   server = createApplication({
+    async explainEventResult(event) {
+      eventCalls++;
+      return explainEvent(event, { fetchImpl: async () => {
+        await wait(150);
+        if (eventMode === 'failure') throw new Error('Mock event AI unavailable');
+        return { ok: true, json: async () => ({ status: 'completed', output: [
+          { type: 'message', content: [{ type: 'output_text', text: JSON.stringify(event.eventId === 'heating-network-failure' ? eventAI : { ...eventAI, summary: event.eventName + '. Затронут район ' + event.district + '.', strengths: [], risks: ['Изменились показатели выбранного района.'] }) }] }
+        ] }) };
+      } });
+    },
     validateInput(input) { validatorCalls++; return validate(input); },
     calculateInput(input) { engineCalls++; return calculate(input); },
     async explainResult(input, result) {
@@ -152,6 +173,7 @@ test('Real Edge E2E: selection, six states, full flow, AI failure and responsive
     await cdp.send('Page.navigate', { url: origin });
     await cdp.until(`document.querySelectorAll('.measure-card').length === 14`);
     assert.equal(await cdp.eval('document.body.dataset.state'), 'INITIAL');
+    assert.equal(await cdp.eval(`document.querySelector('#dynamic-scenario') === null`), true);
     assert.equal(await cdp.eval(`document.querySelector('#baseline').textContent`), '52.56');
     assert.equal(await cdp.eval(`document.querySelector('#analyze').disabled`), true);
     assert.equal(await cdp.eval(`document.querySelectorAll('.city-card').length`), 5);
@@ -243,11 +265,70 @@ test('Real Edge E2E: selection, six states, full flow, AI failure and responsive
     assert.doesNotThrow(() => validatePresentation(renderedAnalysis));
     const typography = await cdp.eval(`['.ai-summary', ...['strengths','risks','tradeoffs','recommendations'].map(s => '[data-section="' + s + '"] li')].map(selector => { const s = getComputedStyle(document.querySelector(selector)); return [parseFloat(s.fontSize), parseFloat(s.lineHeight)]; })`);
     for (let i = 0; i < typography.length; i++) {
-      const expectedSize = i === 0 ? 22 : 18;
+      const expectedSize = 22;
       assert.equal(typography[i][0], expectedSize);
       assert.ok(Math.abs(typography[i][1] - expectedSize * 1.7) < 0.1);
     }
     assert.deepEqual(await cdp.eval(`[...document.querySelectorAll('[data-section]')].map(e => e.dataset.section)`), ['strengths', 'risks', 'tradeoffs', 'recommendations']);
+    assert.equal(await cdp.eval(`document.querySelector('#dynamic-scenario').dataset.state`), 'initial');
+    assert.equal(await cdp.eval(`document.querySelector('#event-trigger').disabled`), true);
+    assert.deepEqual(await cdp.eval(`[...document.querySelector('#event-type').options].map(o => o.textContent)`), ['Перекрытие крупной магистрали', 'Сильное загрязнение воздуха', 'Рост нагрузки на социальную инфраструктуру', 'Ухудшение дорожной безопасности', 'Авария теплосети']);
+    await cdp.eval(`(() => { const s = document.querySelector('#event-type'); s.value = 'heating-network-failure'; s.dispatchEvent(new Event('change')); })()`);
+    assert.match(await cdp.eval(`document.querySelector('#dynamic-scenario').textContent`), /Демонстрационное событие/);
+    assert.match(await cdp.eval(`document.querySelector('.event-effect').textContent`), /Надёжность ЖКХ −20/);
+    assert.match(await cdp.eval(`document.querySelector('#dynamic-scenario').textContent`), /Эффекты заданы для демонстрации/);
+    assert.equal(await cdp.eval(`document.querySelector('#dynamic-scenario h2').textContent`), 'Неожиданное городское событие');
+    assert.equal(await cdp.eval(`/MATAN-only|Динамический сценарий|Детерминированный расчёт|Базовый Score|Синтетический параметр/.test(document.body.innerText)`), false);
+    const baseCalls = engineCalls;
+    assert.equal(eventCalls, 0);
+    await cdp.eval(`(() => { const s = document.querySelector('#event-district'); s.value = 'Нура'; s.dispatchEvent(new Event('change')); })()`);
+    assert.equal(eventCalls, 0);
+    await cdp.eval(`document.querySelector('#event-trigger').click()`);
+    await cdp.until(`document.querySelector('#dynamic-scenario').dataset.state === 'processing'`);
+    assert.equal(await cdp.eval(`document.querySelector('#event-trigger').disabled`), true);
+    await cdp.until(`document.querySelector('#dynamic-scenario').dataset.state === 'success'`);
+    assert.equal(await cdp.eval(`document.querySelector('#event-score-before').textContent`), '56.54');
+    assert.equal(await cdp.eval(`document.querySelector('#event-score-after').textContent`), '55.72');
+    assert.equal(await cdp.eval(`document.querySelector('#event-c1-before').textContent`), '60.00');
+    assert.equal(await cdp.eval(`document.querySelector('#event-c1-after').textContent`), '40.00');
+    assert.equal(await cdp.eval(`document.querySelector('#event-critical-after').textContent`), '0');
+    assert.match(await cdp.eval(`document.querySelector('#event-delta').textContent`), /-0.82/);
+    assert.equal(await cdp.eval(`document.querySelector('#result-score').textContent`), '56.54');
+    assert.equal(await cdp.eval(`document.querySelector('#event-analysis .ai-summary').textContent`), eventAI.summary);
+    assert.equal(engineCalls, baseCalls);
+    const firstEvent = await cdp.eval(`document.querySelector('#event-result').textContent`);
+    await cdp.eval(`document.querySelector('#event-trigger').click()`);
+    await cdp.until(`document.querySelector('#dynamic-scenario').dataset.state === 'success'`);
+    assert.equal(await cdp.eval(`document.querySelector('#event-result').textContent`), firstEvent);
+    assert.equal(engineCalls, baseCalls);
+    for (const event of EVENTS) {
+      await cdp.eval(`(() => { const s = document.querySelector('#event-type'); s.value = ${JSON.stringify(event.id)}; s.dispatchEvent(new Event('change')); })()`);
+      assert.equal(await cdp.eval(`document.querySelector('.event-effect').textContent`), event.description);
+      assert.equal(await cdp.eval(`document.querySelector('.event-title').textContent`), event.name);
+      await cdp.eval(`document.querySelector('#event-trigger').click()`);
+      await cdp.until(`document.querySelector('#dynamic-scenario').dataset.state === 'success'`);
+      const expected = computeEvent(calculate(scenario), event.id, 'Нура');
+      assert.equal(await cdp.eval(`document.querySelector('#event-score-after').textContent`), expected.Score_after.toFixed(2));
+      for (const id of expected.affectedIndicators) {
+        assert.equal(await cdp.eval(`document.querySelector('#event-${id.toLowerCase()}-before').textContent`), expected.indicatorsBefore[id].toFixed(2));
+        assert.equal(await cdp.eval(`document.querySelector('#event-${id.toLowerCase()}-after').textContent`), expected.indicatorsAfter[id].toFixed(2));
+        assert.ok((await cdp.eval(`document.querySelector('#event-result').innerText`)).includes(INDICATOR_NAMES[id]));
+      }
+      assert.equal(await cdp.eval(`document.querySelector('#result-score').textContent`), '56.54');
+      assert.ok((await cdp.eval(`document.querySelector('#event-analysis .ai-summary').textContent`)).length > 0);
+      const snapshot = await cdp.eval(`document.querySelector('#event-result').textContent`);
+      await cdp.eval(`document.querySelector('#event-trigger').click()`);
+      await cdp.until(`document.querySelector('#dynamic-scenario').dataset.state === 'success'`);
+      assert.equal(await cdp.eval(`document.querySelector('#event-result').textContent`), snapshot);
+      assert.equal(engineCalls, baseCalls);
+    }
+    eventMode = 'failure';
+    await cdp.eval(`document.querySelector('#event-trigger').click()`);
+    await cdp.until(`document.querySelector('#dynamic-scenario').dataset.state === 'ai-error'`);
+    assert.equal(await cdp.eval(`document.querySelector('#event-score-after').textContent`), '55.72');
+    assert.equal(await cdp.eval(`document.querySelector('#result-score').textContent`), '56.54');
+    assert.match(await cdp.eval(`document.querySelector('#event-analysis .ai-unavailable').textContent`), /Результат события сохранён/);
+    eventMode = 'success';
     for (const [width, height] of [[1920,1080], [1536,864], [1280,720], [375,812]]) {
       await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
       await layout();

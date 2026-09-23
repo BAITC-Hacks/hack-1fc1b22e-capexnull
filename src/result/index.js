@@ -23,7 +23,7 @@ export function renderResult(container, calculation, analysis, baseline, aiError
   const number = node('strong', 'score-value', format(calculation.Score));
   number.id = 'result-score';
   mainScore.append(number, node('span', 'score-delta', signed(calculation.deltaScore) + ' к исходному'));
-  mainScore.append(node('p', 'score-baseline', 'Базовый Score: ' + format(baseline.Score)));
+  mainScore.append(node('p', 'score-baseline', 'До ваших решений: ' + format(baseline.Score)));
   const stats = node('div', 'result-stats');
   for (const [label, value, id] of [
     ['Использовано', calculation.totalCost, 'result-cost'],
@@ -40,7 +40,7 @@ export function renderResult(container, calculation, analysis, baseline, aiError
   container.append(scorePanel);
 
   const visual = node('section', 'visual-panel');
-  visual.append(node('h3', '', 'Как меняются районы'), node('p', 'muted', 'Исходная оценка → итоговая оценка. Все показатели — из математического расчёта.'));
+  visual.append(node('h3', '', 'Как меняются районы'), node('p', 'muted', 'Оценка до ваших решений → оценка после их реализации.'));
   const bars = node('div', 'district-bars');
   for (const [district, value] of Object.entries(calculation.districtScores)) {
     const row = node('div', 'district-row');
@@ -73,7 +73,7 @@ export function renderResult(container, calculation, analysis, baseline, aiError
 
   const ai = node('section', 'ai-panel');
   ai.append(node('p', 'eyebrow', 'ВЗГЛЯД НА ПОСЛЕДСТВИЯ'), node('h2', '', 'AI-анализ'));
-  ai.append(node('p', 'muted', 'Объяснение рассчитанного сценария. Численные результаты определяет математическая модель.'));
+  ai.append(node('p', 'muted', 'Что означают результаты, какие риски сохраняются и на что обратить внимание.'));
   if (!analysis) {
     ai.append(node('p', 'ai-unavailable', aiError || 'AI-анализ временно недоступен. Математический результат сохранён.'));
   } else {

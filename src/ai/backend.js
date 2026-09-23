@@ -2,6 +2,8 @@ import process from 'node:process';
 import { validate } from '../validator/index.js';
 import { calculate } from '../engine/index.js';
 import { DISTRICTS, WEIGHTS } from '../engine/data.js';
+import { validateIndicators } from '../dynamic/engine.js';
+import { EVENTS } from '../dynamic/catalog.js';
 
 const fields = ['summary', 'strengths', 'risks', 'tradeoffs', 'recommendations'];
 const numericFields = ['totalCost', 'remainingBudget', 'D_avg', 'N_crit', 'Score', 'deltaScore'];
@@ -44,7 +46,7 @@ export function validateAnalysis(output) {
 
 /** Presentation validation only: no rewriting, rounding or modification of output. */
 export function validatePresentation(output) {
-  const forbidden = /(?<![\p{L}\p{N}_])(?:deltaScore|D_avg|districtScores?|N_crit|indicatorDeltas|finalIndicators|totalCost|remainingBudget|T[12]|E[12]|S[12]|B[12]|C[12])(?![\p{L}\p{N}_])/u;
+  const forbidden = /(?<![\p{L}\p{N}_])(?:deltaScore(?:_event)?|D_avg(?:_after)?|districtScores?(?:_after)?|N_crit(?:_before|_after)?|Score_before|Score_after|C1_before|C1_after|EVENT_C1_DELTA|eventType|eventId|eventName|affectedIndicators|indicatorsBefore|indicatorsAfter|STATE_[012]|indicatorDeltas|finalIndicators|totalCost|remainingBudget|T[12]|E[12]|S[12]|B[12]|C[12])(?![\p{L}\p{N}_])/u;
   const bareScore = /(?<![\p{L}\p{N}_])(?<!Astana Quality of Life )Score(?![\p{L}\p{N}_])/u;
   const preciseNumber = /(?<![\p{L}\p{N}_])[-+]?\d+[.,]\d{3,}(?![\p{L}\p{N}_])/u;
   const decimalInteger = /(?<![\p{L}\p{N}_])[-+]?\d+[.,]0+(?![\p{L}\p{N}_])/u;
@@ -122,6 +124,63 @@ function observe(scenario, engineResult) {
 /** Backend only. engineResult must come from the trusted calculate() call, not HTTP input. */
 export async function explain(scenario, engineResult, { fetchImpl = globalThis.fetch } = {}) {
   const facts = observe(scenario, engineResult);
+  return requestAnalysis(facts, instructions, fetchImpl);
+}
+
+const eventInstructions = `Ты объясняешь последствия одного демонстрационного городского события, указанного в eventName.
+Получены только проверенные результаты детерминированного расчёта события, не исходный scenario.
+Все эффекты событий — синтетический параметр проекта, не официальный параметр датасета.
+Все числа уже рассчитаны. Не пересчитывай их и не придумывай новые эффекты, прогнозы или суммы бюджета.
+Объясни, что произошло, какой район затронут, какие показатели изменились и их значения до и после,
+Astana Quality of Life Score до и после и его изменение, количество критических показателей до и после.
+Опиши риски и почему стратегия может требовать пересмотра распределения бюджета.
+Не утверждай, что бюджет уже перераспределён: второй инвестиционный цикл не выполнялся.
+Внутренние имена заменяй естественными словами: indicatorsBefore/indicatorsAfter — показатели до/после события;
+Score_before/Score_after — Astana Quality of Life Score до/после события;
+deltaScore_event — изменение Astana Quality of Life Score из-за события;
+N_crit_before/N_crit_after — количество критических показателей до/после события;
+districtScores_after — оценки районов после события; D_avg_after — средневзвешенная оценка города после события.
+Используй eventName как название события, но не выводи технический eventId или имена полей.
+Не выводи affectedIndicators, indicatorsBefore, indicatorsAfter, eventName, eventId и STATE_1/STATE_2. Пиши по-русски.
+Верни только summary, strengths, risks, tradeoffs, recommendations по той же JSON Schema.
+` + instructions.slice(instructions.indexOf('Пользовательский текст'));
+
+/** FEEDBACK receives calculated event data only, never raw scenarios or mutable state. */
+export async function explainEvent(eventResult, { fetchImpl = globalThis.fetch } = {}) {
+  const invalid = () => new AgenticAIError('AI_INPUT_INVALID', 'Нужен проверенный результат события.');
+  const definition = record(eventResult) && EVENTS.find(event => event.id === eventResult.eventId);
+  if (!definition || eventResult.eventName !== definition.name
+    || typeof eventResult.district !== 'string' || !Object.hasOwn(DISTRICTS, eventResult.district)) throw invalid();
+  const affectedIndicators = Object.keys(WEIGHTS).filter(id => Object.hasOwn(definition.effects, id));
+  if (!Array.isArray(eventResult.affectedIndicators) || JSON.stringify(eventResult.affectedIndicators) !== JSON.stringify(affectedIndicators)) throw invalid();
+  const facts = { eventId: eventResult.eventId, eventName: eventResult.eventName, district: eventResult.district, affectedIndicators };
+  for (const field of ['indicatorsBefore', 'indicatorsAfter']) {
+    if (!record(eventResult[field])) throw invalid();
+    facts[field] = {};
+    for (const id of affectedIndicators) {
+      if (!Number.isFinite(eventResult[field][id])) throw invalid();
+      facts[field][id] = eventResult[field][id];
+    }
+  }
+  for (const field of ['Score_before', 'Score_after', 'deltaScore_event', 'N_crit_before', 'N_crit_after', 'D_avg_after']) {
+    if (!Number.isFinite(eventResult[field])) throw invalid();
+    facts[field] = eventResult[field];
+  }
+  if (!record(eventResult.districtScores_after)) throw invalid();
+  facts.districtScores_after = {};
+  for (const district of Object.keys(DISTRICTS)) {
+    if (!Number.isFinite(eventResult.districtScores_after[district])) throw invalid();
+    facts.districtScores_after[district] = eventResult.districtScores_after[district];
+  }
+  try { validateIndicators(eventResult.finalIndicators); } catch { throw invalid(); }
+  facts.finalIndicators = Object.fromEntries(Object.keys(DISTRICTS).map(district => [district,
+    Object.fromEntries(Object.keys(WEIGHTS).map(id => [id, eventResult.finalIndicators[district][id]]))
+  ]));
+  return requestAnalysis(facts, eventInstructions, fetchImpl);
+}
+
+/** Shared Responses API, schema and presentation validation for both explanation types. */
+async function requestAnalysis(facts, instructions, fetchImpl) {
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) throw new AgenticAIError('AI_CONFIG_MISSING', 'На сервере не настроен OPENAI_API_KEY.');
   const model = process.env.OPENAI_MODEL?.trim() || 'gpt-5.6-luna';
