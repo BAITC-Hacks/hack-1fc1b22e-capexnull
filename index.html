@@ -15,15 +15,14 @@
       <div><p class="eyebrow">ВАШ ГОРОД. ВАШИ ПЯТЬ РЕШЕНИЙ.</p><h1>Аким на 5 часов</h1><p class="subtitle">AI-симулятор городских управленческих решений</p><p class="hero-note">Распределите бюджет, определите приоритеты районов<br class="desktop"> и узнайте, как изменится качество жизни в Астане.</p></div>
       <div class="baseline-card"><span>КАЧЕСТВО ЖИЗНИ СЕЙЧАС</span><div><strong id="baseline">—</strong><small>/ 100</small></div><p>Astana Quality of Life Score</p><span class="baseline-tag">Исходная точка вашего сценария</span></div>
     </section>
-    <section class="city-section" aria-labelledby="city-title"><div class="section-heading"><div><p class="eyebrow">01 / ГОРОД СЕГОДНЯ</p><h2 id="city-title">Пять районов. Разные потребности.</h2></div><span class="muted">Исходная районная оценка · из 100</span></div><div id="city-overview" class="city-grid"></div></section>
+    <section class="city-section" aria-labelledby="city-title"><div class="section-heading"><div><p class="eyebrow">01 / ГОРОД СЕГОДНЯ</p><h2 id="city-title">Исходные показатели районов</h2></div><button type="button" id="methodology-open" class="methodology-button" aria-haspopup="dialog" aria-controls="methodology">Методология оценки</button></div><div id="city-overview" class="city-grid"></div></section>
     <section aria-labelledby="builder-title" class="builder-section">
       <div class="section-heading"><div><p class="eyebrow">02 / ВАШ СЦЕНАРИЙ</p><h2 id="builder-title">Выберите пять мероприятий</h2></div><span class="muted">Порядок выбора не влияет на результат</span></div>
       <div class="builder-layout">
         <div><div class="catalog-guide"><span>14 мер · 5 направлений</span><span>Горизонт расчёта — 8 кварталов</span></div><div id="catalog" class="catalog" aria-label="Каталог мероприятий"></div></div>
         <aside class="selection-panel" aria-labelledby="selection-title">
-          <div class="section-heading"><h3 id="selection-title">Ваш набор решений</h3><span class="pill" id="selected-count">0 / 5</span></div>
-          <p class="english-label">Selected <span id="selected-label">0 / 5</span></p>
-          <div class="budget-lines"><div><span>Общий бюджет</span><strong id="budget">100</strong></div><div><span>Использовано <small>Budget used</small></span><strong id="used">0</strong></div><div class="budget-remaining"><span>Осталось <small>Budget remaining</small></span><strong id="remaining">100</strong></div></div>
+          <div class="section-heading"><h3 id="selection-title">Выбранные мероприятия</h3><span class="pill" id="selected-count">Выбрано: 0/5</span></div>
+          <div class="budget-lines"><div><span>Общий бюджет</span><strong id="budget">100</strong></div><div><span>Использовано</span><strong id="used">0</strong></div><div class="budget-remaining"><span>Осталось</span><strong id="remaining">100</strong></div></div>
           <div id="selection-list" class="selection-list"><p class="empty-note">Добавьте мероприятия из каталога. Для районных мер укажите район.</p></div>
           <button id="analyze" class="primary" disabled>Рассчитать сценарий <span aria-hidden="true">↗</span></button>
           <p id="status" role="status" aria-live="polite">Загружаем исходные данные…</p>
@@ -34,5 +33,22 @@
     <section id="result" class="result-section" aria-live="polite" hidden></section>
     <footer><span>Аким на 5 часов <b>·</b> HackAlem</span><span>Детерминированный расчёт + объяснение AI</span></footer>
   </main>
+  <dialog id="methodology" aria-labelledby="methodology-title">
+    <div class="section-heading"><h2 id="methodology-title">Методология оценки районов</h2><button type="button" id="methodology-close" class="methodology-button">Закрыть</button></div>
+    <p>Все показатели оцениваются по шкале 0–100. Чем выше значение, тем лучше состояние.</p>
+    <dl class="methodology-list">
+      <div><dt>T1</dt><dd>Разгрузка дорог</dd></div>
+      <div><dt>T2</dt><dd>Доступность общественного транспорта</dd></div>
+      <div><dt>E1</dt><dd>Озеленение</dd></div>
+      <div><dt>E2</dt><dd>Качество воздуха</dd></div>
+      <div><dt>S1</dt><dd>Школы и детсады</dd></div>
+      <div><dt>S2</dt><dd>Поликлиники и первичная медпомощь</dd></div>
+      <div><dt>B1</dt><dd>Безопасность улиц</dd></div>
+      <div><dt>B2</dt><dd>Безопасность дорожного движения</dd></div>
+      <div><dt>C1</dt><dd>Надёжность ЖКХ</dd></div>
+      <div><dt>C2</dt><dd>Скорость решения обращений жителей</dd></div>
+    </dl>
+    <p class="methodology-note">Значение ниже 40 считается критическим и учитывается при расчёте Astana Quality of Life Score.</p>
+  </dialog>
 </body>
 </html>

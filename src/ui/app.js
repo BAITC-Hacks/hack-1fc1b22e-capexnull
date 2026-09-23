@@ -23,19 +23,28 @@ const element = (tag, className, text) => {
   return node;
 };
 
+// Structural readiness only. Business admissibility remains in backend Validator.
+function structurallyReady() {
+  return Boolean(config) && selected.size === 5 && [...selected].every(([id, district]) =>
+    config.measures[id].scope === 'city' || Boolean(district));
+}
+
+$('#methodology-open').addEventListener('click', () => $('#methodology').showModal());
+$('#methodology-close').addEventListener('click', () => $('#methodology').close());
+$('#methodology').addEventListener('close', () => $('#methodology-open').focus());
+
 function setState(next, message) {
   state = next;
   document.body.dataset.state = next;
   $('#status').textContent = message;
   $('#status').className = next === 'VALIDATION_ERROR' ? 'error-message' : '';
-  $('#analyze').disabled = busy || selected.size !== 5 || !config;
+  $('#analyze').disabled = busy || !structurallyReady();
   $('#analyze').textContent = busy ? 'Рассчитываем и анализируем…' : 'Рассчитать сценарий ↗';
   document.querySelector('main').setAttribute('aria-busy', String(busy));
 }
 
 function renderSelection() {
-  $('#selected-count').textContent = `${selected.size} / 5`;
-  $('#selected-label').textContent = `${selected.size} / 5`;
+  $('#selected-count').textContent = `Выбрано: ${selected.size}/5`;
   const list = $('#selection-list');
   list.replaceChildren();
   if (!selected.size) list.append(element('p', 'empty-note', 'Добавьте мероприятия из каталога. Для районных мер укажите район.'));
@@ -52,7 +61,7 @@ function renderSelection() {
     checkbox.checked = active;
     checkbox.disabled = busy || (!active && selected.size === 5);
     const select = card.querySelector('select');
-    if (select) { select.hidden = !active; select.disabled = busy; }
+    if (select) { select.closest('.district-field').hidden = !active; select.disabled = busy; }
   }
 }
 
@@ -81,9 +90,11 @@ async function refreshBudget() {
 function changed(updateBudget = true) {
   $('#result').hidden = true;
   renderSelection();
-  setState(selected.size === 5 ? 'READY' : 'INITIAL', selected.size === 5
-    ? 'Набор готов к проверке. Убедитесь, что районы выбраны.'
-    : 'Выберите ровно пять мероприятий для расчёта.');
+  const ready = structurallyReady();
+  setState(ready ? 'READY' : 'INITIAL', ready
+    ? 'Набор готов к проверке.'
+    : selected.size === 5 ? 'Укажите район для каждой выбранной районной меры.'
+      : 'Выберите ровно пять мероприятий для расчёта.');
   if (updateBudget) void refreshBudget();
 }
 
@@ -109,15 +120,18 @@ function renderCatalog() {
     }
     card.append(top, label, details, effects);
     if (measure.scope === 'district') {
+      const field = element('label', 'district-field');
+      field.hidden = true;
+      field.append(element('span', '', 'Район'));
       const select = document.createElement('select');
       select.id = 'district-' + id;
       select.setAttribute('aria-label', 'Район для ' + id);
       select.required = true;
-      select.hidden = true;
       select.append(new Option('Выберите район *', ''));
       for (const district of config.districts) select.append(new Option(district, district));
       select.addEventListener('change', () => { selected.set(id, select.value); changed(false); });
-      card.append(select);
+      field.append(select);
+      card.append(field);
     }
     checkbox.addEventListener('change', () => {
       if (busy) return;
@@ -144,7 +158,7 @@ function renderCity() {
 }
 
 $('#analyze').addEventListener('click', async () => {
-  if (busy || selected.size !== 5) return;
+  if (busy || !structurallyReady()) return;
   const decisions = [...selected].map(([measureId, districtId]) => ({
     measureId, ...(config.measures[measureId].scope === 'district' ? { districtId } : {})
   }));

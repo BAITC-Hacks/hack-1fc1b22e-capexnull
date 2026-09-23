@@ -7,7 +7,8 @@ import { join } from 'node:path';
 import { createApplication } from '../server.js';
 import { calculate } from '../src/engine/index.js';
 import { previewBudget } from '../src/engine/preview.js';
-import { explain } from '../src/ai/backend.js';
+import { explain, validatePresentation } from '../src/ai/backend.js';
+import { validate } from '../src/validator/index.js';
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const decisions = [
@@ -16,13 +17,14 @@ const decisions = [
 ];
 const scenario = { mode: 'MATAN-only', decisions };
 const ai = {
-  summary: 'В Нуре улучшились социальные показатели.', strengths: ['Критических показателей не осталось.'],
+  summary: 'Astana Quality of Life Score составляет 56.54. В Нуре улучшились школы и детсады, поликлиники и первичная медпомощь.', strengths: ['Критических показателей не осталось.'],
   risks: ['Районы сохраняют различия.'], tradeoffs: ['Большая часть бюджета использована.'],
   recommendations: ['Обратить внимание на сохраняющиеся слабые показатели.']
 };
 let apiMode = 'success';
 let engineCalls = 0;
 let aiCalls = 0;
+let validatorCalls = 0;
 let origin;
 let server;
 const originalKey = process.env.OPENAI_API_KEY;
@@ -30,6 +32,7 @@ const originalKey = process.env.OPENAI_API_KEY;
 before(async () => {
   process.env.OPENAI_API_KEY = 'stage4-mock-only';
   server = createApplication({
+    validateInput(input) { validatorCalls++; return validate(input); },
     calculateInput(input) { engineCalls++; return calculate(input); },
     async explainResult(input, result) {
       aiCalls++;
@@ -37,7 +40,7 @@ before(async () => {
         await wait(250);
         if (apiMode === 'failure') throw new Error('Mock API unavailable');
         return { ok: true, json: async () => ({ status: 'completed', output: [
-          { type: 'message', content: [{ type: 'output_text', text: JSON.stringify(ai) }] }
+          { type: 'message', content: [{ type: 'output_text', text: JSON.stringify(apiMode === 'bad-presentation' ? { ...ai, summary: 'deltaScore 3.98539, S1 48' } : ai) }] }
         ] }) };
       } });
     }
@@ -152,6 +155,44 @@ test('Real Edge E2E: selection, six states, full flow, AI failure and responsive
     assert.equal(await cdp.eval(`document.querySelector('#baseline').textContent`), '52.56');
     assert.equal(await cdp.eval(`document.querySelector('#analyze').disabled`), true);
     assert.equal(await cdp.eval(`document.querySelectorAll('.city-card').length`), 5);
+    assert.equal(await cdp.eval(`document.querySelector('#selection-title').textContent`), 'Выбранные мероприятия');
+    assert.equal(await cdp.eval(`document.querySelector('#city-title').textContent`), 'Исходные показатели районов');
+    assert.equal(await cdp.eval(`document.querySelectorAll('#methodology-open').length`), 1);
+    assert.equal(await cdp.eval(`document.querySelector('#methodology-open').textContent`), 'Методология оценки');
+    assert.equal(await cdp.eval(`document.querySelectorAll('dialog').length`), 1);
+    assert.deepEqual(await cdp.eval(`[...document.querySelectorAll('.budget-lines>div>span')].map(e => e.textContent)`), ['Общий бюджет', 'Использовано', 'Осталось']);
+    assert.equal(await cdp.eval(`/Budget used|Budget remaining|Selected|Пять районов. Разные потребности.|Исходная районная оценка · из 100/.test(document.body.innerText)`), false);
+    assert.equal(await cdp.eval(`document.querySelectorAll('#selected-count').length`), 1);
+    assert.equal(await cdp.eval(`document.querySelector('#selected-label')`), null);
+    const definitions = [
+      ['T1', 'Разгрузка дорог'], ['T2', 'Доступность общественного транспорта'],
+      ['E1', 'Озеленение'], ['E2', 'Качество воздуха'], ['S1', 'Школы и детсады'],
+      ['S2', 'Поликлиники и первичная медпомощь'], ['B1', 'Безопасность улиц'],
+      ['B2', 'Безопасность дорожного движения'], ['C1', 'Надёжность ЖКХ'],
+      ['C2', 'Скорость решения обращений жителей']
+    ];
+    for (const [width, height] of [[1536,864], [375,812]]) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      await cdp.eval(`document.querySelector('#methodology-open').click()`);
+      assert.equal(await cdp.eval(`document.querySelector('#methodology').open`), true);
+      assert.equal(await cdp.eval(`document.querySelector('#methodology-title').textContent`), 'Методология оценки районов');
+      assert.deepEqual(await cdp.eval(`[...document.querySelectorAll('.methodology-list>div')].map(e => [e.querySelector('dt').textContent,e.querySelector('dd').textContent])`), definitions);
+      assert.match(await cdp.eval(`document.querySelector('#methodology').textContent`), /шкале 0–100/);
+      assert.match(await cdp.eval(`document.querySelector('#methodology').textContent`), /Значение ниже 40 считается критическим/);
+      assert.equal(await cdp.eval(`(() => { const d = document.querySelector('#methodology'); const r = d.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight && d.scrollWidth <= d.clientWidth; })()`), true);
+      await cdp.eval(`document.querySelector('#methodology-close').click()`);
+      assert.equal(await cdp.eval(`document.querySelector('#methodology').open`), false);
+      await cdp.until(`document.activeElement.id === 'methodology-open'`);
+      assert.equal(await cdp.eval(`document.activeElement.id`), 'methodology-open');
+    }
+    await cdp.eval(`document.querySelector('#methodology-open').click()`);
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await cdp.until(`!document.querySelector('#methodology').open`);
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1536, height: 864, deviceScaleFactor: 1, mobile: false });
+    assert.deepEqual(await cdp.eval(`[...document.querySelectorAll('.measure-card')].map(e => e.dataset.id)`), Array.from({ length: 14 }, (_, i) => 'M' + (i + 1)));
+    await cdp.eval(`document.querySelector('[data-id="M14"]').scrollIntoView()`);
+    assert.equal(await cdp.eval(`document.querySelector('[data-id="M14"]').getBoundingClientRect().top < innerHeight`), true);
 
     async function layout() {
       const result = await cdp.eval(`(() => {
@@ -180,8 +221,11 @@ test('Real Edge E2E: selection, six states, full flow, AI failure and responsive
     await cdp.until(`document.querySelector('#used').textContent === '95'`);
     assert.equal(await cdp.eval('document.body.dataset.state'), 'READY');
     assert.equal(await cdp.eval(`document.querySelector('#remaining').textContent`), '5');
-    assert.equal(await cdp.eval(`document.querySelector('#selected-label').textContent`), '5 / 5');
+    assert.equal(await cdp.eval(`document.querySelector('#selected-count').textContent`), 'Выбрано: 5/5');
     assert.equal(await cdp.eval(`document.querySelector('#district-M7').value`), 'Нура');
+    assert.equal(await cdp.eval(`document.querySelector('#district-M7').closest('.district-field').hidden`), false);
+    assert.equal(await cdp.eval(`document.querySelector('#district-M7').closest('.district-field').querySelector('span').textContent`), 'Район');
+    assert.deepEqual(await cdp.eval(`[...document.querySelector('#district-M7').options].filter(o => o.value).map(o => o.value)`), ['Есиль', 'Алматы', 'Сарыарка', 'Байконур', 'Нура']);
     assert.equal(await cdp.eval(`document.querySelector('#district-M12') === null`), true);
     assert.equal(await cdp.eval(`document.querySelector('#choose-M1').disabled`), true);
     await cdp.eval(`document.querySelector('#choose-M1').click()`);
@@ -195,6 +239,14 @@ test('Real Edge E2E: selection, six states, full flow, AI failure and responsive
     assert.equal(await cdp.eval(`document.querySelector('#result-remaining').textContent`), '5');
     assert.equal(await cdp.eval(`document.querySelector('#result-critical').textContent`), '0');
     assert.equal(await cdp.eval(`document.querySelector('.ai-summary').textContent`), ai.summary);
+    const renderedAnalysis = await cdp.eval(`({ summary: document.querySelector('.ai-summary').textContent, ...Object.fromEntries([...document.querySelectorAll('[data-section]')].map(e => [e.dataset.section, [...e.querySelectorAll('li')].map(li => li.textContent)])) })`);
+    assert.doesNotThrow(() => validatePresentation(renderedAnalysis));
+    const typography = await cdp.eval(`['.ai-summary', ...['strengths','risks','tradeoffs','recommendations'].map(s => '[data-section="' + s + '"] li')].map(selector => { const s = getComputedStyle(document.querySelector(selector)); return [parseFloat(s.fontSize), parseFloat(s.lineHeight)]; })`);
+    for (let i = 0; i < typography.length; i++) {
+      const expectedSize = i === 0 ? 22 : 18;
+      assert.equal(typography[i][0], expectedSize);
+      assert.ok(Math.abs(typography[i][1] - expectedSize * 1.7) < 0.1);
+    }
     assert.deepEqual(await cdp.eval(`[...document.querySelectorAll('[data-section]')].map(e => e.dataset.section)`), ['strengths', 'risks', 'tradeoffs', 'recommendations']);
     for (const [width, height] of [[1920,1080], [1536,864], [1280,720], [375,812]]) {
       await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
@@ -210,6 +262,15 @@ test('Real Edge E2E: selection, six states, full flow, AI failure and responsive
     assert.equal(await cdp.eval(`document.querySelector('#result-score').textContent`), '56.54');
     assert.equal(await cdp.eval(`document.querySelector('#result').hidden`), false);
     assert.match(await cdp.eval(`document.querySelector('.ai-unavailable').textContent`), /временно недоступен/);
+    apiMode = 'bad-presentation';
+    await cdp.eval(`document.querySelector('#analyze').click()`);
+    await cdp.until(`document.body.dataset.state === 'AI_ERROR' && !document.querySelector('#analyze').disabled`);
+    assert.equal(await cdp.eval(`document.querySelector('#result-score').textContent`), '56.54');
+    assert.equal(await cdp.eval(`document.querySelector('#result-cost').textContent`), '95');
+    assert.equal(await cdp.eval(`document.querySelector('#result-remaining').textContent`), '5');
+    assert.equal(await cdp.eval(`document.querySelector('#result').hidden`), false);
+    assert.equal(await cdp.eval(`document.querySelector('.ai-panel').innerText.includes('deltaScore')`), false);
+    assert.match(await cdp.eval(`document.querySelector('.ai-unavailable').textContent`), /Математический результат сохранён/);
     apiMode = 'success';
 
     await select([{ measureId: 'M1', districtId: 'Есиль' }, { measureId: 'M3', districtId: 'Нура' }, { measureId: 'M9', districtId: 'Нура' }, { measureId: 'M10', districtId: 'Нура' }, { measureId: 'M12' }]);
@@ -219,11 +280,33 @@ test('Real Edge E2E: selection, six states, full flow, AI failure and responsive
     assert.match(await cdp.eval(`document.querySelector('#status').textContent`), /M1 и M3 несовместимы/);
     assert.deepEqual([engineCalls, aiCalls], counts);
     await select(decisions.map(item => item.measureId === 'M7' ? { measureId: 'M7' } : item));
-    // Existing selection remembers its district; explicitly clear to test required district validation.
+    // Structural incompleteness blocks sending, without duplicating business rules.
     await cdp.eval(`(() => { const select = document.querySelector('#district-M7'); select.value = ''; select.dispatchEvent(new Event('change')); })()`);
+    assert.equal(await cdp.eval(`document.querySelector('#analyze').disabled`), true);
+    assert.equal(await cdp.eval(`document.body.dataset.state`), 'INITIAL');
+    const incompleteCounts = [validatorCalls, engineCalls, aiCalls];
+    await cdp.eval(`document.querySelector('#analyze').click()`);
+    assert.deepEqual([validatorCalls, engineCalls, aiCalls], incompleteCounts);
+    await cdp.eval(`(() => { const select = document.querySelector('#district-M7'); select.value = 'Нура'; select.dispatchEvent(new Event('change')); })()`);
+    assert.equal(await cdp.eval(`document.querySelector('#analyze').disabled`), false);
+    assert.equal(await cdp.eval(`document.body.dataset.state`), 'READY');
+
+    // Complete but over-budget selection must reach backend Validator unchanged.
+    await select([
+      { measureId: 'M3', districtId: 'Нура' }, { measureId: 'M5', districtId: 'Сарыарка' },
+      { measureId: 'M7', districtId: 'Нура' }, { measureId: 'M8', districtId: 'Нура' },
+      { measureId: 'M13', districtId: 'Есиль' }
+    ]);
+    await cdp.until(`document.querySelector('#used').textContent === '127'`);
+    assert.equal(await cdp.eval(`document.querySelector('#remaining').textContent`), '-27');
+    assert.equal(await cdp.eval(`document.querySelector('#analyze').disabled`), false);
+    const budgetCounts = [validatorCalls, engineCalls, aiCalls];
     await cdp.eval(`document.querySelector('#analyze').click()`);
     await cdp.until(`document.body.dataset.state === 'VALIDATION_ERROR'`);
-    assert.match(await cdp.eval(`document.querySelector('#status').textContent`), /допустимый район/);
+    assert.match(await cdp.eval(`document.querySelector('#status').textContent`), /Стоимость 127 превышает бюджет 100/);
+    assert.equal(validatorCalls, budgetCounts[0] + 1);
+    assert.deepEqual([engineCalls, aiCalls], budgetCounts.slice(1));
+    assert.equal(await cdp.eval(`document.querySelector('#result').hidden`), true);
     assert.deepEqual(cdp.errors, []);
   } finally {
     if (cdp) { cdp.socket.send(JSON.stringify({ id: ++cdp.next, method: 'Browser.close' })); cdp.socket.close(); }

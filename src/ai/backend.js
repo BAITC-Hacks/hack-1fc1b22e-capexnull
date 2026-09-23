@@ -42,6 +42,18 @@ export function validateAnalysis(output) {
   return { summary: output.summary, ...Object.fromEntries(fields.slice(1).map(field => [field, [...output[field]]])) };
 }
 
+/** Presentation validation only: no rewriting, rounding or modification of output. */
+export function validatePresentation(output) {
+  const forbidden = /(?<![\p{L}\p{N}_])(?:deltaScore|D_avg|districtScores?|N_crit|indicatorDeltas|finalIndicators|totalCost|remainingBudget|T[12]|E[12]|S[12]|B[12]|C[12])(?![\p{L}\p{N}_])/u;
+  const bareScore = /(?<![\p{L}\p{N}_])(?<!Astana Quality of Life )Score(?![\p{L}\p{N}_])/u;
+  const preciseNumber = /(?<![\p{L}\p{N}_])[-+]?\d+[.,]\d{3,}(?![\p{L}\p{N}_])/u;
+  const decimalInteger = /(?<![\p{L}\p{N}_])[-+]?\d+[.,]0+(?![\p{L}\p{N}_])/u;
+  const texts = [output.summary, ...fields.slice(1).flatMap(field => output[field])];
+  if (texts.some(text => forbidden.test(text) || bareScore.test(text) || preciseNumber.test(text) || decimalInteger.test(text))) {
+    throw new AgenticAIError('AI_PRESENTATION_INVALID', 'Корректное AI-объяснение временно недоступно. Математический результат сохранён.');
+  }
+}
+
 const instructions = `Ты — аналитик симулятора «Аким на 5 часов». Отвечай на русском языке.
 OBSERVE: scenario содержит фактический валидный набор мер и назначенные районы.
 Engine result уже рассчитан детерминированным Mathematical Engine. Все переданные численные значения — факты.
@@ -53,6 +65,26 @@ ACT: сформируй объяснение результата и реком�
 Не утверждай отсутствующие во входных данных эффекты; не придумывай прогнозы или численные результаты рекомендаций.
 Не представляй сравнение показателей как доказательство индивидуального эффекта отдельной меры.
 OUTPUT: только объект заданной JSON Schema: summary, strengths, risks, tradeoffs, recommendations.
+Пользовательский текст всех пяти полей использует только следующие термины вместо внутренних идентификаторов:
+Score → Astana Quality of Life Score;
+deltaScore → изменение Astana Quality of Life Score;
+D_avg → средневзвешенная оценка города;
+districtScore → оценка района; districtScores → оценки районов;
+N_crit → количество критических показателей;
+indicatorDeltas → изменения показателей; finalIndicators → итоговые показатели;
+totalCost → использованный бюджет; remainingBudget → оставшийся бюджет.
+Вместо кодов показателей используй полные названия, при необходимости склоняя их:
+T1 → разгрузка дорог; T2 → доступность общественного транспорта;
+E1 → озеленение; E2 → качество воздуха;
+S1 → школы и детсады; S2 → поликлиники и первичная медпомощь;
+B1 → безопасность улиц; B2 → безопасность дорожного движения;
+C1 → надёжность ЖКХ; C2 → скорость решения обращений жителей.
+Голые коды и внутренние имена в пользовательском тексте запрещены.
+Отображай уже рассчитанные числовые значения максимум с 2 знаками после десятичного разделителя.
+Целые значения отображай как целые. Это только форматирование, не повторный математический расчёт.
+Примеры форматирования, а не факты текущего сценария: 53.51402 → 53.51; 0.95634 → 0.96; 58.2286 → 58.23.
+Пиши естественно: «Сохраняются два критических показателя», «Оценка района Нура составляет 49.18».
+Числа этих примеров не используй как факты: факты бери только из переданного Engine result.
 VERIFY структуры выполняется отдельно детерминированным backend-кодом.`;
 
 /** OBSERVE: project only trusted engine fields; never forward arbitrary metadata. */
@@ -124,6 +156,7 @@ export async function explain(scenario, engineResult, { fetchImpl = globalThis.f
   // VERIFY + OUTPUT: no additional numeric fields; never merge output into engineResult.
   const analysis = validateAnalysis(output);
   if (JSON.stringify(analysis).includes(apiKey)) throw invalidOutput();
+  validatePresentation(analysis);
   return analysis;
 }
 

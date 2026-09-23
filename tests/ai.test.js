@@ -4,7 +4,7 @@ import process from 'node:process';
 import { readFile } from 'node:fs/promises';
 import { createInput } from '../src/scenario/index.js';
 import { calculate, calculateBaseline } from '../src/engine/index.js';
-import { analysisSchema, validateAnalysis, explain, analyzeScenario, AgenticAIError } from '../src/ai/backend.js';
+import { analysisSchema, validateAnalysis, validatePresentation, explain, analyzeScenario, AgenticAIError } from '../src/ai/backend.js';
 
 const fakeKey = 'unit-test-only-not-a-real-key';
 const originalKey = process.env.OPENAI_API_KEY;
@@ -30,7 +30,7 @@ const scenario = () => createInput([
   { measureId: 'M5', districtId: 'Сарыарка' }
 ]);
 const output = () => ({
-  summary: 'Качество жизни улучшилось: Score 56.54307.',
+  summary: 'Качество жизни улучшилось: Astana Quality of Life Score 56.54.',
   strengths: ['В Нуре улучшились социальные показатели.'],
   risks: ['В Нуре сохраняются сравнительно слабые показатели.'],
   tradeoffs: ['Основная часть бюджета использована.'],
@@ -78,6 +78,41 @@ test('B: correct structured output passes local deterministic verification', () 
   const valid = output();
   assert.deepEqual(validateAnalysis(valid), valid);
   assert.deepEqual(validateAnalysis({ summary: 'Результат', strengths: [], risks: [], tradeoffs: [], recommendations: [] }).risks, []);
+});
+
+test('Presentation validates tokens in all fields without rewriting', () => {
+  const tokens = ['deltaScore', 'D_avg', 'districtScore', 'districtScores', 'N_crit', 'indicatorDeltas', 'finalIndicators', 'totalCost', 'remainingBudget', 'T1', 'T2', 'E1', 'E2', 'S1', 'S2', 'B1', 'B2', 'C1', 'C2', 'Score'];
+  for (const field of keys) for (const token of tokens) {
+    const value = output();
+    value[field] = field === 'summary' ? `Значение (${token}) — 38.` : [`Значение (${token}) — 38.`];
+    const snapshot = structuredClone(value);
+    assert.throws(() => validatePresentation(value), hasCode('AI_PRESENTATION_INVALID'));
+    assert.deepEqual(value, snapshot);
+  }
+  const valid = { ...output(), strengths: ['префиксT1 T10 T1suffix my_deltaScore districtScoresExtra'], risks: ['Школы и детсады: 38; качество воздуха: 58.23; изменение: 0,96.'] };
+  const snapshot = structuredClone(valid);
+  assert.doesNotThrow(() => validatePresentation(valid));
+  assert.deepEqual(valid, snapshot);
+});
+
+test('Presentation checks precision without rounding and integers without decimal parts', () => {
+  for (const number of ['53.51402', '0.95634', '58,2286', '-0.001', '+12.000', '38.00']) {
+    assert.throws(() => validatePresentation({ ...output(), summary: `Оценка: ${number}.` }), hasCode('AI_PRESENTATION_INVALID'));
+  }
+  for (const number of ['53.51', '0.96', '58,23', '38', '-0.01', '0.05']) {
+    assert.doesNotThrow(() => validatePresentation({ ...output(), summary: `Оценка: ${number}.` }));
+  }
+});
+
+test('Presentation failure retains Engine result and original structured AI output', async () => {
+  const invalid = { ...output(), recommendations: ['Проверить S1 и deltaScore 0.95634.'] };
+  const snapshot = structuredClone(invalid);
+  const result = calculate(scenario());
+  const workflow = await analyzeScenario(scenario(), { fetchImpl: api(invalid) });
+  assert.deepEqual(workflow.result, result);
+  assert.equal(workflow.analysis, null);
+  assert.equal(workflow.aiError.code, 'AI_PRESENTATION_INVALID');
+  assert.deepEqual(invalid, snapshot);
 });
 
 test('C: schema and verifier require exactly the five mandatory fields', () => {
@@ -192,6 +227,8 @@ test('K: key is backend environment only, not prompt, output, logs or served sou
   const analysis = await explain(input, result, { fetchImpl: async (_, options) => {
     assert.equal(options.headers.Authorization, `Bearer ${fakeKey}`);
     assert.equal(options.body.includes(fakeKey), false);
+    const request = JSON.parse(options.body);
+    for (const term of ['Astana Quality of Life Score', 'средневзвешенная оценка города', 'оценка района', 'оценки районов', 'количество критических показателей', 'изменения показателей', 'итоговые показатели', 'использованный бюджет', 'оставшийся бюджет', 'разгрузка дорог', 'доступность общественного транспорта', 'озеленение', 'качество воздуха', 'школы и детсады', 'поликлиники и первичная медпомощь', 'безопасность улиц', 'безопасность дорожного движения', 'надёжность ЖКХ', 'скорость решения обращений жителей', 'максимум с 2 знаками', 'Целые значения отображай как целые']) assert.ok(request.instructions.includes(term), term);
     return { ok: true, json: async () => envelope(output()) };
   } });
   assert.equal(JSON.stringify(analysis).includes(fakeKey), false);
